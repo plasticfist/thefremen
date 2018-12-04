@@ -3,6 +3,8 @@ Secrets of the desert - misc musings
 
 Misc projects, underdevelopment
 
+*** NOTE: this is UNDERDEVELOPMENT, not for use, yet.
+
 Purpose
 
 Requirements
