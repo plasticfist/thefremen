@@ -1,15 +1,14 @@
 """
 RFXrcv-E python plugin for Domoticz
-Author: plasticfist,
-        adapted from the Smart Virtual Thermostat plugin by Logread, and
+Author: plasticfist
+
+        plugin starting framework and inspiration from various source including
         https://github.com/domoticz/domoticz/blob/development/plugins/examples/HTTP.py
         https://github.com/domoticz/domoticz/blob/development/plugins/examples/DenonMarantz.py
 Notes:  This works with an OLD RFXrcv-E device (see picture)
-        I do not know if it will work with newer RFXrcv-E devices (smaller RFXLAN?)
+        I do not know if it will work with any other RFXCOM ethernet devices
 
-TODO:
-- implement initialization of device
-  Commands
+# Device Initialization commands
 # reference: My original C implementation
 #
 ->  F0 2C   Set variable length mode
@@ -19,7 +18,7 @@ TODO:
 <-  4D 50   VersionL Master: 50
 
 ->  F0 2A   Enable all RF
-<-  2A      ACK?
+<-  2A      ACK
 
 # reference: https://forums.homeseer.com/forum/3rd-party-developer-area/general-developer-discussion/mcs/xap/xap-library/26151-xapmcsrf-w800-rfxcom-xap-node
 #
@@ -179,13 +178,13 @@ class BasePlugin:
             Domoticz.Debugging(0)
 
         if Parameters["Mode2"]=='Yes':
-            Domoticz.Log("RFXrcv-E create all devices seen.")
+            Domoticz.Debug("RFXrcv-E create all devices seen.")
 
         self.tcpConn = Domoticz.Connection(Name="RFXrcv-EConn", Transport="TCP/IP", Protocol="None", Address=Parameters["Address"], Port=Parameters["Port"])
         self.tcpConn.Connect()
-        self.pollPeriod = 16 #  6 * int(Parameters["Mode1"])
-        self.pollCount = self.pollPeriod - 1
         Domoticz.Heartbeat(25)
+
+        self.streamData= bytearray()
         return
 
     def onStop(self):
@@ -219,34 +218,54 @@ class BasePlugin:
         return
 
     def onMessage(self, Connection, Data):
-        Domoticz.Debug('onMessage called - Received: '+Data.hex())
+        Domoticz.Debug('onMessage called - Received')
 
 # prefer to use my own copy of the buffer
 # TODO: this ought to accumulate, and process.  Rarely some packets come in two pieces..
-        procData= bytearray(Data)
+        self.streamData= self.streamData+bytearray(Data)
 
-# process the incoming Data stream
-        if len(procData)>0:
+# process the incoming Data stream as a sliding window
+# when any packet is found, advance the front of the window
+# to the end of the last packet found
+# for now assume all packets are 10 bytes long
 
-            # expecting ACKs 0x2C 0x2A, and periodic 0x50s (from where I don't know)
-            if len(procData)<4:
-                Domoticz.Debug('Consuming ACKs and spurious coms {0:02X}'.format(procData[0]))
-                procData= procData[1:]
+        i= 0
+        done = False
+        while not done:
 
-            # Prefer to process full sensor data packets
-            elif processPacket(procData):
-                procData= procData[10:]
+            # not enough data to use
+            if len(self.streamData)-i<10:
+                done= True
+                break
 
-            # if not check for version info packet
+            # look for a packet in 10 bytes at a time
+            procData= self.streamData[i:i+10]
+
+            # expecting ACKs from commands to device
+            # and I see periodic single bytes (e.g. 0x50, source unknown)
+
+            # Usually we are receiving sensor data packets
+            # if a packet is found, slide the window
+            if processPacket(procData):
+                self.streamData= self.streamData[i+10:]
+                i= 0
+
+            # check for version info packet?
             #
             elif procData[0]==0x4D and procData[2]==0x53:
+                PrintBinary("Data:{} ".format(procData.hex()), procData)
                 Domoticz.Log("RFXCOM- RFReceiver Version- Master:{:02x} Slave:{:02x}".format(procData[1],procData[3]))
-                procData= procData[4:]
+                self.streamData= self.streamData[i+4:]
+                i= 0
 
             # I've seen it in reverse order too (odd?)
             elif procData[0]==0x53 and procData[2]==0x4D:
+                PrintBinary("Data:{} ".format(procData.hex()), procData)
                 Domoticz.Log("RFXCOM- RFReceiver Version- Master:{:02x} Slave:{:02x}".format(procData[3],procData[1]))
-                procData= procData[4:]
+                self.streamData= self.streamData[i+4:]
+                i= 0
+
+            i = i+1
 
         return
 
@@ -306,49 +325,6 @@ def onHeartbeat():
     global _plugin
     _plugin.onHeartbeat()
 
-
-#
-#
-# will redo this later (FIX), for now recognize one sensor only
-#
-# Oregon Scientific sensors
-#
-# Sensor    Code
-# THGR122NX A2D    # *****I own this sensor (w/sticker 11A15), it is the correct code!
-# BTHR918   5A5D
-# BTHR968   5D60
-# PCR800    2914
-# PSR01
-# RGR918    2A1D    rain gauge
-# RGR968    2D10    rain gauge
-# RTGR328NA
-# THC268
-# THGN123N  1D20
-# THGN801   F824
-# THGR122NX 1D20    *** own this, and it is sending 1A2D
-# THGR228N  1A2D
-# THGR268
-# THGR810   F824
-# THGR810(1)    F8B4
-# THGR918   1A3D
-# THN132N   EC40
-# THR238NF  EC40
-# THR268
-# THWR288A  EA4C
-# THWR288A-JD
-# THWR800   C844
-# UVN800    D874
-# UVR128    EC70
-# WGR800(2) 1994
-# WGR800(3) 1984
-# WGR918    3A0D
-# STR918    3A0D
-#
-# 1. This is the temperature/RH sensor that originally shipped with the WMR100 – it was integrated with the anemometer.
-# 2. The original anemometer which included a temperature/RH sensor.
-# 3. The newer anemometer with no temperature/RH sensor.
-#
-
 # Generic helper functions
 #------------------------------------------------------------
 #
@@ -360,24 +336,29 @@ def onHeartbeat():
 #
 def processPacket(procData):
 
+# Sensor ID codes verified by plasticfist
+# 0x1A2D - THGR122NX, verified. I have one (w/sticker 11A15)
+# 0x45 Ambient Weather F007TH (part of a 10 bit preamble)
+#
+
+# Oregon Scientific sensors
     sensorTypeId= (procData[0]<<8)|procData[1]
     sensorID2Name = {
-        0x1A2D:'THGR122NX/THGN123N/THGN122N/THGR228N/THGR238/THGR268',
+        0x1A2D:'THGR122NX/THGN123N/THGN122N/THGR228N/THGR238/THGR268', # THGR122NX verifed I own
         0x1D20:'THGR122NX',
-        0x5A5D:'BTHR918',
+        0x5A5D:'BTHGN129/BTHR918', # BTHGN129 verified I own
         0x5A6D:'BTHR918N/BTHR968',
         0x5D60:'BTHR968',
         0x2914:'PCR800',
         0x2A19:'PCR800',
-        0x2A1D:'RGR126/RGR682/RGR918',
-        0x2D10:'RGR968',
+        0x2A1D:'RGR126/RGR682/RGR918',  # rain gauge
+        0x2D10:'RGR968',                # rain gauge
         0x1D20:'THGN123N',
         0xF824:'THGN801',
         0xF824:'THGR810',
         0xF8B4:'THGR810(1)',
         0x1A3D:'THGR918/THGRN228NX/THGN500',
         0xEC40:'THN132N/THR238NF',
-        0xEC40:'THR238NF',
         0xEA4C:'THC238/THN132N/THWR288A/THR122N/THN122N/AW129/AW131/THWR288A',
         0xC844:'THWR800',
         0xD874:'UVN800',
@@ -396,6 +377,10 @@ def processPacket(procData):
         0xDA78:'UVN800',
         0xEAC0:'OWL CM113'
     }
+    # 1. This is the temperature/RH sensor that originally shipped with the WMR100 – it was integrated with the anemometer.
+    # 2. The original anemometer which included a temperature/RH sensor.
+    # 3. The newer anemometer with no temperature/RH sensor.
+    #
 
     sensorName= sensorID2Name.get(sensorTypeId,"Unknown")
     if sensorName=='Unknown':
@@ -406,44 +391,40 @@ def processPacket(procData):
         else:
             return False
 
+    PrintBinary("Data:{} ".format(procData.hex()), procData)
+
 # recognized sensor type
-    Domoticz.Log('Packet ID {0:04X} - sensor {1} (len={2})'.format(sensorTypeId, sensorName,len(procData)))
-    Domoticz.Log('Received: '+procData.hex())
+    Domoticz.Debug('Packet ID {0:04X} - sensor {1} (len={2})'.format(sensorTypeId, sensorName,len(procData)))
 
 # Create recognized devices, even if they can't be decoded
 # just to show they are out there (and we should support them)
     channel= 0
     rollingCode=0
     sV=''
-    BatteryLevel= 255
     DeviceTypeName= 'Custom'
     DeviceName= "{}-unsupported".format(sensorName)
     temperature= 0
     humidity= 0
-    hs= 0
+    humidityStatus= 0
+
+    batteryStatus= 0
+    batteryStatusText= "OK"
+    batteryLevel= 100
+
+    # useful for debugging
     humidityText = {
         0: "NORM",
         1: "COMF",
         2: "*DRY",
         3: "*WET"
     }
-    bs= 0
-    BatteryStatus= "OK"
-    BatteryLevel= 100
 
     if sensorName=='F007TH':
-
-        DeviceTypeName= "Temp+Hum"
-
-        binary= ""
-        for i in range(0, len(procData)):
-            binary = binary + "{0:08b} ".format(procData[i])
-        Domoticz.Log("binaryO: {}".format(binary))
 
         # for some reason the bytes are coming in reversed, flip them back
         binary= ""
         for i in range(0, len(procData)):
-            procData[i] = reverse8Bits(procData[i])
+            procData[i] = Reverse8Bits(procData[i])
 
         # data is arriving with the preamble_pattern[2] = {0x01, 0x45}; // 12 bits
         # on the front, (reference: ambient_weather.c)
@@ -455,165 +436,124 @@ def processPacket(procData):
             if t<len(procData)-1:
                 procData[t] |= ((procData[t+1]&0b11000000)>>6)
 
-        binary= ""
-        for i in range(0, len(procData)):
-            binary = binary + "{0:08b} ".format(procData[i])
-        Domoticz.Log("binaryR: {}".format(binary))
-
-        if len(procData)<6:
-            Domoticz.Debug('partial F007TH packet, aborting...')
-            return False
+        PrintBinary("F007TH: ", procData)
+        #
+        # if len(procData)<6:
+        #     Domoticz.Debug('partial F007TH packet, aborting...')
+        #     return False
 
         # is this a F007TH packet?
-        Domoticz.Log("F007TH Code: {:02x}".format(procData[0]))
+        Domoticz.Debug("F007TH Code: {:02x}".format(procData[0]))
         if procData[0]!=0x45:
             Domoticz.Debug('not a F007TH packet, aborting...')
             return False
 
-        # verify Checksum
+        # Ambient Weather check is an LFSR Digest-8, gen 0x98, key 0x3e, init 0x64
+        calculated = LFSRDigest8(procData, 5, 0x98, 0x3e) ^ 0x64;
+
+        # Verify Checksum
         expected = procData[5];
-        calculated = lfsr_digest8(procData, 5, 0x98, 0x3e) ^ 0x64;
-        # Domoticz.Log('Expected: {0:02x} Calculated: {1:02x}'.format(expected, calculated))
         if expected != calculated:
-            Domoticz.Log('Checksum error in Ambient Weather message. Expected: {0:02x} Calculated: {1:02x}'.format(expected, calculated))
-        #    return False;
+            Domoticz.Debug('Checksum error in Ambient Weather message. Expected: {0:02x} Calculated: {1:02x}'.format(expected, calculated))
+            return False;
 
         rollingCode = procData[1]
 
         # battery status -  0 OK, 1 low
         # TODO: Verify (we need a low but not dead AAA to check this)
         bs = procData[2]&0x80
-
-        # channel
         channel= ((procData[2]>>4) & 0b00000111)+1
-
-        # humidity
-        # humidity bits
         humidity = procData[4]
 
-        # temperature bits (before reverse)
+        # temperature
         temperature =  (procData[2] & 0b00001111) << 8
         temperature |= (procData[3] & 0b11111111)
-        temperature /= 10
-        temperature -= 40
+        temperature = (temperature/10)-40
 
-        # Domotics expects Celsius
         # This sensor only reports in Fahrenheit
-        # need to convert to Celsius
+        # need to convert, Domotics expects Celsius
         temperature = (temperature-32)* (5/9)
+        DeviceTypeName= "Temp+Hum"
+        sV= "{0:.1f};{1};{2}".format(temperature, humidity, humidityStatus)
 
-# only decodes the Oregon Scientific THGR122NX, currently
-    elif sensorTypeId==0x1A2D:
+    # Oregon Scientific THGR122NX (0x1A2D) verified
+    # 0x1D20, 0xF824, 0xF8B4 should work, but i haven't verified them myself
+    elif (sensorTypeId==0x1A2D or sensorTypeId==0x1D20 or
+          sensorTypeId==0xF824 or sensorTypeId==0xF8B4):
 
-    # Must have enough packet to decode
-    # should be 10, but we can get data from 8
+        # Must have enough packet to decode
+        # should be 10, but we can get the data from 8 bytes
         if len(procData)<9:
             Domoticz.Debug('partial packet, aborting...')
-            return False;
-
-    # calc nibble checksum
-        sum= 0
-        for b in range(8):
-            sum += (procData[b]&0x0f)+(procData[b]>>4)
-        sum -= 0x0a;
-
-    # checksum verify
-        if sum!=procData[8]:
-            Domoticz.Debug('***Checksum failed')
             return False
 
-        DeviceTypeName= "Temp+Hum"
+        # checksum verify
+        if OSCalcCheckSum(sensorTypeId, procData, 8)!=procData[8]:
+            Domoticz.Debug('*** {} Checksum failed'.format(sensorTypeId))
+            return False
 
-# channel
-        if procData[2]&0x10:
-            channel = 1
-        elif procData[2]&0x20:
-            channel = 2
-        elif procData[2]&0x40:
-            channel = 3
-        else:
-            channel = -1
+        DeviceTypeName= "Temp+Hum"  # Temp+Hum+Baro
+        channel= OSGetChannel(sensorTypeId, procData)
+        rollingCode= OSGetRollingCode(sensorTypeId, procData)
+        batteryStatus = OSGetbattery(sensorTypeId, procData)  # battery status -  0 OK, 1 low
+        temperature = OSGetTemperature(sensorTypeId, procData)
+        humidity= OSGetHumidity(sensorTypeId, procData)
+        humidityStatus= OSGetHumidityStatus(sensorTypeId, procData)
+        humidityStatusText= humidityText.get(humidityStatus, "Invalid")
+        sV= "{0:.1f};{1};{2}".format(temperature, humidity, humidityStatus)
 
-# rollingCode
-        rollingCode= procData[3]
+    # Oregon Scientific BTHGN129 (0x5A5D) verified
+    # BTHR968 (0x5D60) should work, but i haven't verified them myself
+    elif (sensorTypeId==0x5A5D):
 
-# battery status -  0 OK, 1 low
-        bs = procData[4]&0x04
+        # docs say message length is 21 nibbles?   not seeing it, hmm
+        # need enough to decode
+        if len(procData)<10:
+            Domoticz.Debug('partial packet, aborting...')
+            return False
 
-# temperature, BCD encoded Celsius with a fixed dec place
-        t0 = float(procData[5]>>4)    # digit 1
-        t1 = float(procData[5]&0x0F)  # digit 2
-        t2 = float(procData[4]>>4)    # 1st digit right of decimal
-        temperature = t0*10.0+t1+t2*0.1
+#        if OSCalcCheckSum(sensorTypeId, procData, 9)!=procData[9]:
+#            Domoticz.Log('0x5A5D ***Checksum failed')
+#            return False
 
-# negative temp?
-# docs seem to be wrong?
-# I own the THGR122NX, and here is what works
-        if (procData[6]&0x08)!=0:
-            temperature = -temperature
+        channel= OSGetChannel(sensorTypeId, procData)
+        rollingCode= OSGetRollingCode(sensorTypeId, procData)
+        batteryStatus = OSGetbattery(sensorTypeId, procData)
+        temperature = OSGetTemperature(sensorTypeId, procData)
+        humidity= OSGetHumidity(sensorTypeId, procData)
+        humidityStatus= OSGetHumidityStatus(sensorTypeId, procData)
+        humidityStatusText = humidityText.get(humidityStatus, "Invalid")
+        pressure= OSGetPressure(sensorTypeId, procData)
 
-# always report in Celsius, to see Fahrenheit, see
-# Domoticz: Setup->Settings->Meters/Counters
+        DeviceTypeName= "Temp+Hum+Baro"
+        domo_forecast= 0
+        sV= "{0:.1f};{1};{2};{3};{4}".format(temperature, humidity, humidityStatus, pressure, domo_forecast)
 
-# humidity
-        h1= float(procData[7]&0x0F)
-        h2= float(procData[6]>>4)
-        humidity= h1*10.0+h2
+    # set values for all sensors
+    if batteryStatus!=0:
+        batteryStatusText= "Low"
+        batteryLevel= 5
 
-# humidity status
-        hs= procData[7]>>6
-
-# set values for all sensors
-    if bs!=0:
-        BatteryStatus= "Low"
-        BatteryLevel= 5
-
-    humidityStatus= humidityText.get(hs, "Invalid")
     shortSensorName= sensorName.split("/")[0]
     DeviceName= "{}-{}".format(shortSensorName, channel)
-    sV= "{0:.1f};{1};{2}".format(temperature, humidity, hs)
-    Domoticz.Log("{} channel={} rollingCode={:02x} temperature= {} degrees Humidity={}% humidityStatus={} BatteryStatus={} sValue={}".format(sensorName, channel, rollingCode, temperature, humidity, humidityStatus, BatteryStatus, sV))
+    Domoticz.Debug("{} channel={} rollingCode={:02x} temperature= {} degrees Humidity={}% humidityStatus={} batteryStatusText={} sValue={}".format(sensorName, channel, rollingCode, temperature, humidity, humidityStatus, batteryStatusText, sV))
     DevId= "{0}{1:04X}{2:1X}{3:02X}".format(Parameters["HardwareID"], sensorTypeId, channel, rollingCode)
 
     TimedOut= 0
-    UpdateDevice(DeviceName, DeviceTypeName, DevId, sV, TimedOut, BatteryLevel)
+    UpdateDevice(DeviceName, DeviceTypeName, DevId, sV, TimedOut, batteryLevel)
     return True
 
-# def AmbientWeatherChecksum(l, buf):
-#     mask = 0x7C;
-#     checksum = 0x64;
-#
-#     for byteCnt in range(8)
-#         int bitCnt;
-#         data = buff[byteCnt]
-#
-#         for bitCnt in range(8)
-#
-#             # Rotate mask right
-#             bit = mask & 1
-#             mask = (mask >> 1 ) | (mask << 7)
-#             if bit:
-#                 mask ^= 0x18
-#
-#             # XOR mask into checksum if data bit is 1
-#             if data & 0x80 :
-#                 checksum ^= mask
-#             data <<= 1
-#         }
-#     }
-#     return checksum
+def UpdateDevice(DeviceName, DeviceTypeName, DevId, sValue, TimedOut, batteryLevel):
 
-def UpdateDevice(DeviceName, DeviceTypeName, DevId, sValue, TimedOut, BatteryLevel):
-# update device, if it exists already
+    # update device, if it exists already
     found= False
     for Unit in Devices:
         if Devices[Unit].DeviceID==DevId:
             found= True
             break
 
-# found a new device
     if found:
-        Devices[Unit].Update(nValue=0, sValue=sValue, TimedOut=TimedOut, BatteryLevel=BatteryLevel)
+        Devices[Unit].Update(nValue=0, sValue=sValue, TimedOut=TimedOut, BatteryLevel=batteryLevel)
         Domoticz.Debug("Update DevId='{}' with '{}'".format(DevId, sValue))
     else:
         nextDeviceUnit= len(Devices)+1 # if Devices else 0
@@ -638,7 +578,12 @@ def DumpConfigToLog(DevId):
         Domoticz.Debug("Device LastLevel: " + str(Devices[x].LastLevel))
     return
 
-def reverse8Bits(a):
+#
+# utility functions
+#
+
+# reverse the bits in each byte
+def Reverse8Bits(a):
     b= a&1
     for i in range(7):
         a >>= 1
@@ -646,11 +591,21 @@ def reverse8Bits(a):
         b |= a&1
     return b
 
+# print out the packet in binary, forward and backward
+def PrintBinary(msg, data):
+    binary= ""
+    for i in range(0, len(data)):
+        binary = binary + "{0:08b} ".format(data[i])
+    Domoticz.Debug("{}: {}".format(msg, binary))
+
+# Ambient Weather
+#
+
 # references:
-# https://eclecticmusingsofachaoticmind.wordpress.com/2015/01/21/home-automation-temperature-sensors/
-# https://github.com/merbanan/rtl_433/blob/master/src/devices/ambient_weather.c
-# The check is an LFSR Digest-8, gen 0x98, key 0x3e, init 0x64
-def lfsr_digest8(message, bytes, gen, key):
+#   https://eclecticmusingsofachaoticmind.wordpress.com/2015/01/21/home-automation-temperature-sensors/
+#   https://github.com/merbanan/rtl_433/
+#
+def LFSRDigest8(message, bytes, gen, key):
     sum = 0
     for k in range(0, bytes):
         data = message[k]
@@ -667,3 +622,75 @@ def lfsr_digest8(message, bytes, gen, key):
             else:
                 key = (key >> 1)
     return sum
+
+# Oregon Scientific
+#
+def OSCalcCheckSum(sensorTypeId, data, len):
+    # calc nibble checksum
+    sum= 0
+    for b in range(len):
+        sum += (data[b]&0x0f)+(data[b]>>4)
+    sum -= 0x0a
+    return sum
+
+def OSGetChannel(sensorTypeId, data):
+    # channel 0x10=1, 0x20=2, 0x40=3
+    c= data[2]>>4
+    if c==4:
+        return 3
+    else:
+        return c
+
+ # battery status -  0 OK, 1 low
+def OSGetbattery(sensorTypeId, data):
+    # was bs = procData[4]&0x04
+    battery_low= data[3]>>2 & 0x01
+    return battery_low
+
+def OSGetRollingCode(sensorTypeId, data):
+    # was rollingCode= procData[3]
+    return (data[2]&0x0f)+(data[3]&0xf0)
+
+def OSGetTemperature(sensorTypeId, data):
+    # temperature, BCD encoded Celsius with fixed decimal
+    t0 = float(data[5]>>4)    # digit 1
+    t1 = float(data[5]&0x0F)  # digit 2
+    t2 = float(data[4]>>4)    # 1st digit right of decimal
+    temperature = t0*10.0+t1+t2*0.1
+
+    # negative temp, my findings seem to conflict with docs
+    # I own the THGR122NX, and here is what worked
+    if (data[6]&0x08)!=0:
+       temperature = -temperature
+
+    return temperature
+
+def OSGetHumidityStatus(sensorTypeId, data):
+
+    if sensorTypeId==0x5A5D:
+        sensorReading= data[7]>>4  # BTHGN129 (0x5A5D) 0x00: normal, 0x04: comfortable, 0x08: dry 0x0C wet
+        if sensorReading==0x04:
+            humidityStatus= 1  # Comfortable
+        elif sensorReading==0x08:
+            humidityStatus= 2  # Dry
+        elif sensorReading==0x0C:
+            humidityStatus= 3 # Wet
+        else:
+            humidityStatus= 0 # Normal
+    else:
+        humidityStatus= data[7]>>6  # THGR122NX (0x1A2DD)
+
+    return humidityStatus
+
+def OSGetHumidity(sensorTypeId, data):
+    h1= float(data[7]&0x0F)
+    h2= float(data[6]>>4)
+    humidity= h1*10.0+h2
+    # docs said ((data[6]&0x0f)*10)+(data[6]>>4), but that didn't work for my sensors
+    return humidity
+
+# pressure by rtl_433 code
+def OSGetPressure(sensorTypeId, data):
+    # Reference: rtl_433 code
+    pressure = ((data[7] & 0x0f) | (data[8] & 0xf0)) + 856
+    return pressure
