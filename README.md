@@ -1,5 +1,5 @@
 # thefremen
-Secrets of the desert people
+Secrets of the desert people- see the Wiki for more details
 
 *** NOTE: this is UNDERDEVELOPMENT, and is built for an esoteric device few people own
 
