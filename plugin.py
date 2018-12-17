@@ -344,38 +344,38 @@ def processPacket(procData):
 # Oregon Scientific sensors
     sensorTypeId= (procData[0]<<8)|procData[1]
     sensorID2Name = {
+        0x0A4D:'Oregon-THR128/Oregon-THR138/Oregon-THC138',
+        0x1994:'WGR800(2)',
+        0x1984:'WGR800(3)',
         0x1A2D:'THGR122NX/THGN123N/THGN122N/THGR228N/THGR238/THGR268', # THGR122NX verifed I own
+        0x1A3D:'THGR918/THGRN228NX/THGN500',
+        0x1A89:'WGR800',
+        0x1A99:'WTGR800',
         0x1D20:'THGR122NX',
-        0x5A5D:'BTHGN129/BTHR918', # BTHGN129 verified I own
-        0x5A6D:'BTHR918N/BTHR968',
-        0x5D60:'BTHR968',
+#        0x1D20:'THGN123N',
         0x2914:'PCR800',
         0x2A19:'PCR800',
         0x2A1D:'RGR126/RGR682/RGR918',  # rain gauge
         0x2D10:'RGR968',                # rain gauge
-        0x1D20:'THGN123N',
-        0xF824:'THGN801',
+        0x3A0D:'WGR918/STR918',
+        0x5A5D:'BTHGN129/BTHR918', # BTHGN129 verified I own
+        0x5A6D:'BTHR918N/BTHR968',
+        0x5D60:'BTHR968',
+        0xC844:'THWR800',
+        0xCA2C:'THGR328N',
+        0xCA48:'THWR800',
+        0xD874:'UVN800',
+        0xEA4C:'THC238/THN132N/THWR288A/THR122N/THN122N/AW129/AW131/THWR288A',
+        0xEA7C:'UVN128/UV138',
+        0xEAC0:'OWL CM113',
+        0xEC40:'THN132N/THR238NF',
+        0xEC70:'UVR128',
+#        0xF824:'THGN801',
         0xF824:'THGR810',
         0xF8B4:'THGR810(1)',
-        0x1A3D:'THGR918/THGRN228NX/THGN500',
-        0xEC40:'THN132N/THR238NF',
-        0xEA4C:'THC238/THN132N/THWR288A/THR122N/THN122N/AW129/AW131/THWR288A',
-        0xC844:'THWR800',
-        0xD874:'UVN800',
-        0xEC70:'UVR128',
-        0x1994:'WGR800(2)',
-        0x1984:'WGR800(3)',
-        0x3A0D:'WGR918/STR918',
-        0x0A4D:'Oregon-THR128/Oregon-THR138/Oregon-THC138',
-        0xCA48:'THWR800',
         0xFA28:'THWR800',
-        0xCA2C:'THGR328N',
         0xFAB8:'WTGR800',
-        0x1A99:'WTGR800',
-        0x1A89:'WGR800',
-        0xEA7C:'UVN128/UV138',
         0xDA78:'UVN800',
-        0xEAC0:'OWL CM113'
     }
     # 1. This is the temperature/RH sensor that originally shipped with the WMR100 – it was integrated with the anemometer.
     # 2. The original anemometer which included a temperature/RH sensor.
@@ -556,11 +556,20 @@ def UpdateDevice(DeviceName, DeviceTypeName, DevId, sValue, TimedOut, batteryLev
         Devices[Unit].Update(nValue=0, sValue=sValue, TimedOut=TimedOut, BatteryLevel=batteryLevel)
         Domoticz.Debug("Update DevId='{}' with '{}'".format(DevId, sValue))
     else:
-        nextDeviceUnit= len(Devices)+1 # if Devices else 0
-        Domoticz.Log("Creating new Device {} - {}".format(nextDeviceUnit, DevId))
-        newDevice = Domoticz.Device(DeviceName, Unit=nextDeviceUnit, TypeName=DeviceTypeName, Used=0, DeviceID=DevId)
-        newDevice.Create()
-        DumpConfigToLog(DevId='')
+#        nextDeviceUnit= len(Devices)+1 # keep as a reminder, this does not work (e.g. if devices contains 1,2,3,5)
+        success= False
+        for newDeviceUnit in range(1,256):
+            if newDeviceUnit not in Devices:
+                success= True
+                Domoticz.Log("Creating new Device {} - {}".format(newDeviceUnit, DevId))
+                newDevice = Domoticz.Device(DeviceName, Unit=newDeviceUnit, TypeName=DeviceTypeName, Used=0, DeviceID=DevId)
+                newDevice.Create()
+                DumpConfigToLog(DevId='')
+                break
+               
+        if not success:
+            Domoticz.Log("Unable to add new Device {} - {} (max 255?)".format(newDeviceUnit, DevId))
+                  
 
 def DumpConfigToLog(DevId):
     for x in Parameters:
@@ -692,5 +701,7 @@ def OSGetHumidity(sensorTypeId, data):
 # pressure by rtl_433 code
 def OSGetPressure(sensorTypeId, data):
     # Reference: rtl_433 code
-    pressure = ((data[7] & 0x0f) | (data[8] & 0xf0)) + 856
+#    pressure = ((data[7] & 0x0f) | (data[8] & 0xf0)) + 856
+ 
+    pressure = ((data[7]&0xf0) | (data[8] & 0x0f)) + 889
     return pressure
