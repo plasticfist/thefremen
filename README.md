@@ -1,20 +1,18 @@
 # thefremen
-Secrets of the desert - misc musings
+Secrets of the desert people- see the Wiki for more details
 
-Misc projects, underdevelopment
+*** NOTE: this is UNDERDEVELOPMENT, and is built for an esoteric device few people own
 
-*** NOTE: this is UNDERDEVELOPMENT, not for use, yet.
+Purpose: RFXCOM legacy ethernet RFReceiver device plugin for Domoticz
 
-Purpose
+Requirements: Legacy ethernet RFReceiver device, Domoticz server
 
-Requirements
+Building: Create new plugin directory (e.g. RFXrcv), get plugin.py from this project.
+(TODO: provide simple git clone directions)
 
-Building
+Usage: See configuration screen in Domoticz
 
-Usage
+Message Types: Currently supports two Oregon Scientific temperature/humidity sensors, and one Ambient Weather.
 
-Message Types
-
-
-Compatibility
+Compatibility:  Device will detect and add additional Oregon Scientific sensors, but the code will need to be updated to support them.
 
