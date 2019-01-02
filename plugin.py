@@ -691,17 +691,36 @@ def OSGetHumidityStatus(sensorTypeId, data):
 
     return humidityStatus
 
+# 1D20, F824, F8B4
+# nibbles 10..8 temperature LSD is 0.1 degC
+# nibble 11 temperature sign, non-zero for negative values
+# nibbles 13..12 relative humidty - percent
+# nibble 14 unknown
+# Packet ID 1A2D - sensor THGR122NX/THGN123N/THGN122N/THGR228N/THGR238/THGR268 (len=10)
+# 1a 2d 40 fb 10 18 00 04 3c 5a 
+# 00011010 00101101 01000000 11111011 00010000 00011000 00000000 00000100 00111100 01011010
+# ch=3 rollingCode=f0 temperature= 18.1 degrees Humidity=40.0% humidityStatus=0 batteryStatusText=OK 
+# sValue=18.1;40.0;0
+
 def OSGetHumidity(sensorTypeId, data):
+    # docs said ((data[6]&0x0f)*10)+(data[6]>>4)
+    # but the length nibble isn't present on this device (shift nibbles by 1)
     h1= float(data[7]&0x0F)
     h2= float(data[6]>>4)
     humidity= h1*10.0+h2
-    # docs said ((data[6]&0x0f)*10)+(data[6]>>4), but that didn't work for my sensors
     return humidity
 
-# pressure by rtl_433 code
+# Packet ID 5A5D - sensor BTHGN129/BTHR918 (len=10)
+# actual pressure 1024
+# 5a 5d 13 71 10 21 00 83 c4 31 
+# 01011010 01011101 00010011 01110001 00010000 00100001 00000000 10000011 11000100 00110001
+# BTHGN129/BTHR918 channel=1 rollingCode=73 temperature= 21.1 degrees Humidity=30.0% humidityStatus=2 batteryStatusText=OK
+# sValue=21.1;30.0;2;1021;0
+#
 def OSGetPressure(sensorTypeId, data):
     # Reference: rtl_433 code
 #    pressure = ((data[7] & 0x0f) | (data[8] & 0xf0)) + 856
  
-    pressure = ((data[7]&0xf0) | (data[8] & 0x0f)) + 889
+    pressure = ((data[6]&0x0f)<<16) + data[7]+ 893
+    pressure = data[7] + 893
     return pressure
